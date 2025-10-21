@@ -1,0 +1,172 @@
+import telebot
+from telebot import types
+import json
+import os
+from datetime import datetime
+import logging
+
+# Настройка логирования
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+# Инициализация бота
+bot = telebot.TeleBot('YOUR_BOT_TOKEN_HERE')  # ЗАМЕНИТЕ НА ВАШ ТОКЕН!
+
+# Файл для хранения расписания
+SCHEDULE_FILE = 'schedule.json'
+
+# Загрузка расписания из файла
+def load_schedule():
+    try:
+        if os.path.exists(SCHEDULE_FILE):
+            with open(SCHEDULE_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        return {}
+    except Exception as e:
+        logger.error(f"Ошибка загрузки расписания: {e}")
+        return {}
+
+# Сохранение расписания в файл
+def save_schedule(schedule):
+    try:
+        with open(SCHEDULE_FILE, 'w', encoding='utf-8') as f:
+            json.dump(schedule, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.error(f"Ошибка сохранения расписания: {e}")
+
+# Получение дня недели
+def get_weekday():
+    days = ['понедельник', 'вторник', 'среду', 'четверг', 'пятницу', 'субботу', 'воскресенье']
+    return days[datetime.today().weekday()]
+
+# Команда /start
+@bot.message_handler(commands=['start'])
+def send_welcome(message):
+    logger.info(f"Пользователь {message.from_user.id} запустил бота")
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    btn1 = types.KeyboardButton('📅 Расписание на сегодня')
+    btn2 = types.KeyboardButton('📋 Расписание на неделю')
+    btn3 = types.KeyboardButton('✏️ Редактировать расписание')
+    markup.add(btn1, btn2, btn3)
+    
+    bot.send_message(
+        message.chat.id,
+        f"Привет, {message.from_user.first_name}! 👋\n"
+        "Я бот для расписания уроков.\n"
+        "Выбери действие:",
+        reply_markup=markup
+    )
+
+# Расписание на сегодня
+@bot.message_handler(func=lambda message: message.text == '📅 Расписание на сегодня')
+def today_schedule(message):
+    logger.info(f"Пользователь {message.from_user.id} запросил расписание на сегодня")
+    schedule = load_schedule()
+    today = get_weekday()
+    
+    if today in schedule and schedule[today]:
+        response = f"📚 Расписание на {today}:\n\n"
+        for i, lesson in enumerate(schedule[today], 1):
+            response += f"{i}. {lesson}\n"
+    else:
+        response = f"На {today} уроков нет 🎉"
+    
+    bot.send_message(message.chat.id, response)
+
+# Расписание на неделю
+@bot.message_handler(func=lambda message: message.text == '📋 Расписание на неделю')
+def week_schedule(message):
+    logger.info(f"Пользователь {message.from_user.id} запросил расписание на неделю")
+    schedule = load_schedule()
+    days = ['понедельник', 'вторник', 'среду', 'четверг', 'пятницу', 'субботу']
+    
+    response = "📚 Расписание на неделю:\n\n"
+    for day in days:
+        response += f"**{day.capitalize()}**:\n"
+        if day in schedule and schedule[day]:
+            for i, lesson in enumerate(schedule[day], 1):
+                response += f"  {i}. {lesson}\n"
+        else:
+            response += "  Уроков нет\n"
+        response += "\n"
+    
+    bot.send_message(message.chat.id, response)
+
+# Редактирование расписания
+@bot.message_handler(func=lambda message: message.text == '✏️ Редактировать расписание')
+def edit_schedule(message):
+    logger.info(f"Пользователь {message.from_user.id} начал редактирование расписания")
+    markup = types.InlineKeyboardMarkup()
+    days = [
+        ('Понедельник', 'monday'),
+        ('Вторник', 'tuesday'),
+        ('Среда', 'wednesday'),
+        ('Четверг', 'thursday'),
+        ('Пятница', 'friday'),
+        ('Суббота', 'saturday')
+    ]
+    
+    for day_name, day_key in days:
+        markup.add(types.InlineKeyboardButton(day_name, callback_data=f'edit_{day_key}'))
+    
+    bot.send_message(message.chat.id, "Выбери день для редактирования:", reply_markup=markup)
+
+# Обработка callback'ов
+@bot.callback_query_handler(func=lambda call: True)
+def callback_handler(call):
+    if call.data.startswith('edit_'):
+        day_key = call.data[5:]
+        day_names = {
+            'monday': 'понедельник',
+            'tuesday': 'вторник',
+            'wednesday': 'среду',
+            'thursday': 'четверг',
+            'friday': 'пятницу',
+            'saturday': 'субботу'
+        }
+        
+        day_name = day_names[day_key]
+        logger.info(f"Пользователь {call.from_user.id} редактирует {day_name}")
+        msg = bot.send_message(
+            call.message.chat.id,
+            f"Введи расписание на {day_name} (каждый урок с новой строки):"
+        )
+        bot.register_next_step_handler(msg, save_day_schedule, day_name)
+
+def save_day_schedule(message, day_name):
+    lessons = message.text.split('\n')
+    # Убираем пустые строки
+    lessons = [lesson.strip() for lesson in lessons if lesson.strip()]
+    
+    schedule = load_schedule()
+    schedule[day_name] = lessons
+    save_schedule(schedule)
+    
+    logger.info(f"Пользователь {message.from_user.id} сохранил расписание на {day_name}")
+    bot.send_message(message.chat.id, f"✅ Расписание на {day_name} сохранено!")
+
+# Обработка текстовых сообщений
+@bot.message_handler(func=lambda message: True)
+def handle_text(message):
+    logger.info(f"Пользователь {message.from_user.id} отправил: {message.text}")
+    if message.text.lower() in ['привет', 'hello', 'hi']:
+        bot.send_message(message.chat.id, f"Привет! 👋 Используй кнопки для работы с расписанием.")
+    else:
+        bot.send_message(message.chat.id, "Используй кнопки для навигации 📱")
+
+# Запуск бота
+if __name__ == '__main__':
+    print("=" * 50)
+    print("Бот запускается...")
+    print("Для остановки нажмите Ctrl+C")
+    print("=" * 50)
+    
+    try:
+        logger.info("Запуск бота...")
+        bot.infinity_polling()
+    except Exception as e:
+        logger.error(f"Ошибка при работе бота: {e}")
+        print(f"Критическая ошибка: {e}")
